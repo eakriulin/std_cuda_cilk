@@ -104,8 +104,20 @@ void report(int threadsPerBlock, double stdDev, float elapsedTime, int bucketSiz
     cout << "Execution Time (Threads Per Block: " << threadsPerBlock << "): " << elapsedTime << " ms" << endl << endl;
 }
 
-int main() {
-    int dataSize = 5000; // We define Datasize here
+int main(int argc, char *argv[]) {
+    // Check if the dataSize argument is provided
+    if (argc != 2) {
+        cerr << "Usage: " << argv[0] << " <dataSize>" << endl;
+        return 1; // Return an error code
+    }
+
+    // Convert the argument to an integer
+    int dataSize = atoi(argv[1]);
+    if (dataSize <= 0) {
+        cerr << "Error: dataSize must be a positive integer." << endl;
+        return 1; // Return an error code
+    }
+
     double* data = prepare(dataSize);
 
     vector<int> threadsPerBlockConfigs = {32, 64, 96, 128};
