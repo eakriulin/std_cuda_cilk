@@ -24,20 +24,26 @@ To run the CUDA implementation of the standard deviation calculation, follow the
 ### Compilation
 
 1. Navigate to the directory containing the CUDA code:
-    bash
+
+    ```bash
     cd path/to/cuda_code_directory
+    ```
 
 2. Compile the CUDA program using the "nvcc" compiler. Replace "std_cuda.cu" with the actual name of the CUDA file:
-    bash
+
+    ```bash
     nvcc -o std_cuda std_cuda.cu
+    ```
 
    This command will compile the CUDA code and generate an executable named "std_cuda".
 
 ### Running the Program
 
 - Run the compiled CUDA program. You can specify the dataset size as a command-line argument. For example, to generate a dataset of 5,000,000 values and calculate standard deviation:
-    bash
+
+    ```bash
     ./std_cuda 5000000
+    ``````
 
 - The program will generate a pseudo-random dataset of specified size, calculate its standard deviation, and output result along with execution time.
 
