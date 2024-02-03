@@ -1,6 +1,3 @@
-#include <iostream>
-#include <vector>
-#include <cmath>
 #include <cuda_runtime.h>
 
 using namespace std;
@@ -31,16 +28,13 @@ __global__ void bucketVarianceKernel(const double* data, const double* bucketMea
 }
 
 // Prepare the dataset by randomly generating data points
-double* prepare(int dataSize) {
-    double* data = new double[dataSize];
+double* prepareUnified(int dataSize) {
+    double* data;
+    cudaMallocManaged(&data, dataSize * sizeof(double));
     for (int i = 0; i < dataSize; ++i) {
         data[i] = static_cast<double>(rand()) / RAND_MAX * 100.0; // Random numbers between 0 and 100
     }
-    double* d_data;
-    cudaMalloc(&d_data, dataSize * sizeof(double));
-    cudaMemcpy(d_data, data, dataSize * sizeof(double), cudaMemcpyHostToDevice);
-    delete[] data; // Free the host memory
-    return d_data;
+    return data;
 }
 
 // Compute the standard deviation
@@ -104,6 +98,23 @@ void report(int threadsPerBlock, double stdDev, float elapsedTime, int bucketSiz
     cout << "Execution Time (Threads Per Block: " << threadsPerBlock << "): " << elapsedTime << " ms" << endl << endl;
 }
 
+
+void calculateMeanAndStdDevSequentially(const double* data, int dataSize, double &mean, double &stdDev) {
+    double sum = 0.0;
+    for (int i = 0; i < dataSize; ++i) {
+        sum += data[i];
+    }
+    mean = sum / dataSize;
+
+    double varianceSum = 0.0;
+    for (int i = 0; i < dataSize; ++i) {
+        varianceSum += (data[i] - mean) * (data[i] - mean);
+    }
+    double variance = varianceSum / dataSize;
+    stdDev = sqrt(variance);
+}
+
+
 int main(int argc, char *argv[]) {
     // Check if the dataSize argument is provided
     if (argc != 2) {
@@ -118,16 +129,28 @@ int main(int argc, char *argv[]) {
         return 1; // Return an error code
     }
 
-    double* data = prepare(dataSize);
+    // Prepare the dataset with Unified Memory
+    double* data = prepareUnified(dataSize);
 
+    // Calculate mean and standard deviation sequentially for correctness checking
+    double correctMean, correctStdDev;
+    calculateMeanAndStdDevSequentially(data, dataSize, correctMean, correctStdDev);
+    cout << "Sequential Standard Deviation: " << correctStdDev << endl;
+
+    // Proceed with CUDA computations
     vector<int> threadsPerBlockConfigs = {32, 64, 96, 128};
     for (int threadsPerBlock : threadsPerBlockConfigs) {
         float elapsedTime;
         int bucketSize, numberOfBuckets;
         double stdDev = compute(data, dataSize, threadsPerBlock, elapsedTime, bucketSize, numberOfBuckets);
         report(threadsPerBlock, stdDev, elapsedTime, bucketSize, numberOfBuckets);
+        
+        // Compare CUDA-computed stdDev with correctStdDev
+        cout << "Difference between Sequential and CUDA-computed StdDev: " << abs(correctStdDev - stdDev) << endl;
     }
 
-    cudaFree(data); // Free the allocated memory
+    // Clean up
+    cudaFree(data); // Free the allocated unified memory
+
     return 0;
 }
