@@ -1,104 +1,93 @@
+#include <iostream>
 #include <cuda_runtime.h>
+#include <cmath>
+#include <cstdlib>
 
 using namespace std;
 
-__global__ void bucketMeanKernel(const double* data, double* bucketMeans, int bucketSize, int dataSize) {
-    int bucketIndex = blockIdx.x;
-    int startIdx = bucketIndex * bucketSize;
-    int endIdx = min(startIdx + bucketSize, dataSize);
+// Kernel function to calculate sum of elements for mean calculation
+__global__ void calculateGlobalMeanKernel(const double* data, double* partialSums, int dataSize) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    sdata[tid] = (i < dataSize) ? data[i] : 0;
+    __syncthreads();
 
-    double sum = 0.0;
-    for (int i = startIdx; i < endIdx; ++i) {
-        sum += data[i];
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
     }
-    bucketMeans[bucketIndex] = sum / (endIdx - startIdx);
+
+    if (tid == 0) partialSums[blockIdx.x] = sdata[0];
 }
 
-__global__ void bucketVarianceKernel(const double* data, const double* bucketMeans, double* bucketVariances, int bucketSize, int dataSize) {
-    int bucketIndex = blockIdx.x;
-    int startIdx = bucketIndex * bucketSize;
-    int endIdx = min(startIdx + bucketSize, dataSize);
+// Kernel function to calculate sum of squared differences for variance calculation
+__global__ void calculateVarianceKernel(const double* data, double* partialVariances, double mean, int dataSize) {
+    extern __shared__ double sdata[];
+    unsigned int tid = threadIdx.x;
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    sdata[tid] = (i < dataSize) ? pow(data[i] - mean, 2) : 0;
+    __syncthreads();
 
-    double sum = 0.0;
-    for (int i = startIdx; i < endIdx; ++i) {
-        double diff = data[i] - bucketMeans[bucketIndex];
-        sum += diff * diff;
+    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
+        __syncthreads();
     }
-    bucketVariances[bucketIndex] = sum / (endIdx - startIdx);
+
+    if (tid == 0) partialVariances[blockIdx.x] = sdata[0];
 }
 
-// Prepare the dataset by randomly generating data points
+// Function to calculate global mean
+double calculateGlobalMean(const double* data, int dataSize, int threadsPerBlock) {
+    int blocks = (dataSize + threadsPerBlock - 1) / threadsPerBlock;
+    double* partialSums;
+    cudaMallocManaged(&partialSums, blocks * sizeof(double));
+
+    calculateGlobalMeanKernel<<<blocks, threadsPerBlock, threadsPerBlock * sizeof(double)>>>(data, partialSums, dataSize);
+    cudaDeviceSynchronize();
+
+    double totalSum = 0;
+    for (int i = 0; i < blocks; ++i) {
+        totalSum += partialSums[i];
+    }
+    cudaFree(partialSums);
+
+    return totalSum / dataSize;
+}
+
+// Function to calculate variance using the global mean
+double calculateVariance(const double* data, double mean, int dataSize, int threadsPerBlock) {
+    int blocks = (dataSize + threadsPerBlock - 1) / threadsPerBlock;
+    double* partialVariances;
+    cudaMallocManaged(&partialVariances, blocks * sizeof(double));
+
+    calculateVarianceKernel<<<blocks, threadsPerBlock, threadsPerBlock * sizeof(double)>>>(data, partialVariances, mean, dataSize);
+    cudaDeviceSynchronize();
+
+    double totalVariance = 0;
+    for (int i = 0; i < blocks; ++i) {
+        totalVariance += partialVariances[i];
+    }
+    cudaFree(partialVariances);
+
+    return totalVariance / dataSize;
+}
+
+// Prepare the dataset with random values
 double* prepareUnified(int dataSize) {
     double* data;
     cudaMallocManaged(&data, dataSize * sizeof(double));
     for (int i = 0; i < dataSize; ++i) {
-        data[i] = static_cast<double>(rand()) / RAND_MAX * 100.0; // Random numbers between 0 and 100
+        data[i] = static_cast<double>(rand()) / RAND_MAX * 100.0;
     }
     return data;
 }
 
-// Compute the standard deviation
-double compute(const double* data, int dataSize, int threadsPerBlock, float &elapsedTime, int &bucketSize, int &numberOfBuckets) {
-    bucketSize = 16; // We adjust appropriate bucket size
-    numberOfBuckets = (dataSize + bucketSize - 1) / bucketSize;
-    
-    double* d_bucketMeans, *d_bucketVariances;
-    double* h_bucketMeans = new double[numberOfBuckets];
-    double* h_bucketVariances = new double[numberOfBuckets];
-
-    cudaMalloc(&d_bucketMeans, numberOfBuckets * sizeof(double));
-    cudaMalloc(&d_bucketVariances, numberOfBuckets * sizeof(double));
-
-    // Start timing
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start);
-
-    // Launch kernels
-    bucketMeanKernel<<<numberOfBuckets, threadsPerBlock>>>(data, d_bucketMeans, bucketSize, dataSize);
-    cudaDeviceSynchronize();
-
-    bucketVarianceKernel<<<numberOfBuckets, threadsPerBlock>>>(data, d_bucketMeans, d_bucketVariances, bucketSize, dataSize);
-    cudaDeviceSynchronize();
-
-    // Stop timing
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&elapsedTime, start, stop);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-
-    // Copy results back to host
-    cudaMemcpy(h_bucketMeans, d_bucketMeans, numberOfBuckets * sizeof(double), cudaMemcpyDeviceToHost);
-    cudaMemcpy(h_bucketVariances, d_bucketVariances, numberOfBuckets * sizeof(double), cudaMemcpyDeviceToHost);
-
-    // Final calculation of variance on host
-    double variance = 0.0;
-    for (int i = 0; i < numberOfBuckets; ++i) {
-        variance += h_bucketVariances[i];
-    }
-    variance /= numberOfBuckets;
-
-    // Clean up
-    cudaFree(d_bucketMeans);
-    cudaFree(d_bucketVariances);
-    delete[] h_bucketMeans;
-    delete[] h_bucketVariances;
-
-    // Return the standard deviation
-    return sqrt(variance);
-}
-
-// Report the results including bucket size and number of buckets
-void report(int threadsPerBlock, double stdDev, float elapsedTime, int bucketSize, int numberOfBuckets) {
-    cout << "Calculating standard deviation with " << threadsPerBlock << " threads per block." << endl;
-    cout << "Bucket Size: " << bucketSize << ", Number of Buckets: " << numberOfBuckets << endl;
-    cout << "Standard Deviation (CUDA): " << stdDev << endl;
-    cout << "Execution Time (Threads Per Block: " << threadsPerBlock << "): " << elapsedTime << " ms" << endl << endl;
-}
-
-
+// Function to calculate mean and standard deviation sequentially for correctness checking
 void calculateMeanAndStdDevSequentially(const double* data, int dataSize, double &mean, double &stdDev) {
     double sum = 0.0;
     for (int i = 0; i < dataSize; ++i) {
@@ -114,43 +103,37 @@ void calculateMeanAndStdDevSequentially(const double* data, int dataSize, double
     stdDev = sqrt(variance);
 }
 
+// Prepare the dataset with random values, calculateGlobalMean, calculateVariance as previously defined ...
 
 int main(int argc, char *argv[]) {
-    // Check if the dataSize argument is provided
     if (argc != 2) {
-        cerr << "Usage: " << argv[0] << " <dataSize>" << endl;
-        return 1; // Return an error code
+        cerr << "Usage: " << argv[0] << " <dataSize>\n";
+        return 1;
     }
 
-    // Convert the argument to an integer
     int dataSize = atoi(argv[1]);
-    if (dataSize <= 0) {
-        cerr << "Error: dataSize must be a positive integer." << endl;
-        return 1; // Return an error code
-    }
-
-    // Prepare the dataset with Unified Memory
     double* data = prepareUnified(dataSize);
 
-    // Calculate mean and standard deviation sequentially for correctness checking
-    double correctMean, correctStdDev;
-    calculateMeanAndStdDevSequentially(data, dataSize, correctMean, correctStdDev);
-    cout << "Sequential Standard Deviation: " << correctStdDev << endl;
+    // Sequential calculation for comparison
+    double seqMean, seqStdDev;
+    calculateMeanAndStdDevSequentially(data, dataSize, seqMean, seqStdDev);
+    cout << "Sequential Calculation:" << endl;
+    cout << "Mean: " << seqMean << ", Standard Deviation: " << seqStdDev << endl;
 
-    // Proceed with CUDA computations
-    vector<int> threadsPerBlockConfigs = {32, 64, 96, 128};
-    for (int threadsPerBlock : threadsPerBlockConfigs) {
-        float elapsedTime;
-        int bucketSize, numberOfBuckets;
-        double stdDev = compute(data, dataSize, threadsPerBlock, elapsedTime, bucketSize, numberOfBuckets);
-        report(threadsPerBlock, stdDev, elapsedTime, bucketSize, numberOfBuckets);
-        
-        // Compare CUDA-computed stdDev with correctStdDev
-        cout << "Difference between Sequential and CUDA-computed StdDev: " << abs(correctStdDev - stdDev) << endl;
-    }
+    // Parallel CUDA calculation
+    const int threadsPerBlock = 256; // Adjust based on GPU architecture and optimization
+    double mean = calculateGlobalMean(data, dataSize, threadsPerBlock);
+    double variance = calculateVariance(data, mean, dataSize, threadsPerBlock);
+    double stdDev = sqrt(variance);
 
-    // Clean up
-    cudaFree(data); // Free the allocated unified memory
+    cout << "Parallel CUDA Calculation:" << endl;
+    cout << "Mean: " << mean << ", Standard Deviation: " << stdDev << endl;
 
+    // Compare the results
+    cout << "Comparison:" << endl;
+    cout << "Difference in Mean: " << fabs(seqMean - mean) << endl;
+    cout << "Difference in Standard Deviation: " << fabs(seqStdDev - stdDev) << endl;
+
+    cudaFree(data); // Cleanup
     return 0;
 }
