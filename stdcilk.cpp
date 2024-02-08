@@ -17,12 +17,7 @@ void calculateBucketResultForMean(vector<double>* dataset, vector<double>* resul
         bucketSum += (*dataset)[i];
     }
 
-    int datasetSize = dataset->size();
-    double bucketSize = endIdx - startIdx;
-    double bucketMean = bucketSum / bucketSize;
-    double bucketProportion = bucketSize / datasetSize;
-
-    (*results)[bucketIdx] = bucketMean * bucketProportion;
+    (*results)[bucketIdx] = bucketSum;
 }
 
 double calculateMeanConcurrently(vector<double>* dataset, int numberOfBuckets, int bucketSize) {
@@ -34,12 +29,12 @@ double calculateMeanConcurrently(vector<double>* dataset, int numberOfBuckets, i
         calculateBucketResultForMean(dataset, &results, bucketIdx, startIdx, endIdx);
     }
 
-    double mean = 0.0;
+    double sum = 0.0;
     for (double result : results) {
-        mean += result;
+        sum += result;
     }
 
-    return mean;
+    return sum / dataset->size();
 }
 
 void calculateBucketResultForSsd(vector<double>* dataset, vector<double>* results, double mean, int bucketIdx, int startIdx, int endIdx) {
