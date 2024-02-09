@@ -58,7 +58,6 @@ double calculateGlobalMean(const double* data, int dataSize, int threadsPerBlock
 
     return totalSum / dataSize;
 }
-
 // Function to calculate variance using the global mean
 double calculateVariance(const double* data, double mean, int dataSize, int threadsPerBlock) {
     int blocks = (dataSize + threadsPerBlock - 1) / threadsPerBlock;
@@ -77,7 +76,7 @@ double calculateVariance(const double* data, double mean, int dataSize, int thre
     return totalVariance / dataSize;
 }
 
-// Prepare the dataset with random values
+
 double* prepareUnified(int dataSize) {
     double* data;
     cudaMallocManaged(&data, dataSize * sizeof(double));
@@ -103,37 +102,57 @@ void calculateMeanAndStdDevSequentially(const double* data, int dataSize, double
     stdDev = sqrt(variance);
 }
 
-// Prepare the dataset with random values, calculateGlobalMean, calculateVariance as previously defined ...
-
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        cerr << "Usage: " << argv[0] << " <dataSize>\n";
+    if (argc != 3) {
+        cerr << "Usage: " << argv[0] << " <dataSize> <threadsPerBlock>\n";
         return 1;
     }
 
     int dataSize = atoi(argv[1]);
+    int threadsPerBlock = atoi(argv[2]);
+
+    if (threadsPerBlock <= 0 || threadsPerBlock > 1024) {
+        cerr << "Error: threadsPerBlock must be between 1 and 1024.\n";
+        return 1;
+    }
+
+    // Prepare the dataset
     double* data = prepareUnified(dataSize);
 
-    // Sequential calculation for comparison
-    double seqMean, seqStdDev;
-    calculateMeanAndStdDevSequentially(data, dataSize, seqMean, seqStdDev);
-    cout << "Sequential Calculation:" << endl;
-    cout << "Mean: " << seqMean << ", Standard Deviation: " << seqStdDev << endl;
+    // Define CUDA events for timing
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
 
-    // Parallel CUDA calculation
-    const int threadsPerBlock = 256; // Adjust based on GPU architecture and optimization
+    // Record the start event
+    cudaEventRecord(start);
+
+    // Execute the kernel to calculate the global mean
     double mean = calculateGlobalMean(data, dataSize, threadsPerBlock);
+    cudaDeviceSynchronize(); // Ensure mean calculation completion
+
+    // Execute the kernel to calculate variance using the global mean
     double variance = calculateVariance(data, mean, dataSize, threadsPerBlock);
+    cudaDeviceSynchronize(); // Ensure variance calculation completion
+
+    // Calculate the standard deviation from the variance
     double stdDev = sqrt(variance);
+
+
+    // Record the stop event and calculate the elapsed time
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
 
     cout << "Parallel CUDA Calculation:" << endl;
     cout << "Mean: " << mean << ", Standard Deviation: " << stdDev << endl;
+    cout << "Calculation took " << milliseconds << " milliseconds." << endl;
 
-    // Compare the results
-    cout << "Comparison:" << endl;
-    cout << "Difference in Mean: " << fabs(seqMean - mean) << endl;
-    cout << "Difference in Standard Deviation: " << fabs(seqStdDev - stdDev) << endl;
+    // Cleanup
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+    cudaFree(data);
 
-    cudaFree(data); // Cleanup
     return 0;
 }
